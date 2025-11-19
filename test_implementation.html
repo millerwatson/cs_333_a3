@@ -17,6 +17,11 @@
       height: 100vh;
     }
 
+    .legend {
+      font-size: 12px;
+    }
+
+
     /* This is your "box" for the map */
     #map-container {
       flex: 3;
@@ -54,9 +59,19 @@
   </style>
 </head>
 <body>
+  <div id="time-controls" style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+    <button id="play-btn">Play</button>
+    <button id="pause-btn">Pause</button>
+
+    <input id="year-slider" type="range" min="2010" max="2024" value="2024" step="1" 
+          style="flex-grow:1;">
+
+    <span id="year-label">2024</span>
+  </div>
   <div class="layout">
     <!-- LEFT: MAP BOX -->
     <div id="map-container">
+      <svg></svg>
       <svg></svg>
     </div>
 
@@ -68,6 +83,9 @@
         Negative Affect
       </label>
       <br>
+      <div id="neg-legend" style="margin-top:10px; display:block;">
+        <svg width="220" height="60"></svg>
+      </div>
       <!-- Add more checkboxes/controls -->
     </div>
   </div>
@@ -116,6 +134,51 @@
     let valueMap = new Map();
     let color = null;
 
+    let currentYear = 2024;
+    let playing = false;
+    let playInterval = null;
+
+    const slider = document.getElementById("year-slider");
+    const yearLabel = document.getElementById("year-label");
+    const playBtn = document.getElementById("play-btn");
+    const pauseBtn = document.getElementById("pause-btn");
+
+    // --- Slider drag behavior ---
+    slider.addEventListener("input", function () {
+      currentYear = +this.value;
+      yearLabel.textContent = currentYear;
+
+      // Call your eventual map update function here:
+      // updateMap(currentYear);
+    });
+
+    // --- Play animation ---
+    playBtn.addEventListener("click", () => {
+      if (playing) return;   // already playing
+      playing = true;
+
+      playInterval = setInterval(() => {
+        currentYear++;
+
+        if (currentYear > 2024) {
+          currentYear = 2010; // loop back to start
+        }
+
+        slider.value = currentYear;
+        yearLabel.textContent = currentYear;
+
+        // updateMap(currentYear);
+      }, 800);  // change speed here (ms per step)
+    });
+
+    // --- Pause animation ---
+    pauseBtn.addEventListener("click", () => {
+      playing = false;
+      clearInterval(playInterval);
+    });
+
+
+
     Promise.all([
       d3.json("https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json"),
       d3.csv("OECD_clean_large.csv")
@@ -141,6 +204,56 @@
       const color = d3.scaleDiverging()
         .domain([min, mid, max])
         .interpolator(d3.interpolateRdBu);
+
+      // ----------------------
+      // DRAW NEGATIVE AFFECT LEGEND (right under checkbox)
+      // ----------------------
+      const legendSvg = d3.select("#neg-legend svg");
+      legendSvg.selectAll("*").remove();
+
+      const legendWidth = 180;
+      const legendHeight = 12;
+
+      // Gradient
+      const defs = legendSvg.append("defs");
+      const gradient = defs.append("linearGradient")
+        .attr("id", "negGrad")
+        .attr("x1", "0%")
+        .attr("x2", "100%");
+
+      gradient.append("stop")
+        .attr("offset", "0%")
+        .attr("stop-color", color(min));
+
+      gradient.append("stop")
+        .attr("offset", "50%")
+        .attr("stop-color", color(mid));
+
+      gradient.append("stop")
+        .attr("offset", "100%")
+        .attr("stop-color", color(max));
+
+      // Gradient bar
+      legendSvg.append("rect")
+        .attr("x", 20)
+        .attr("y", 20)
+        .attr("width", legendWidth)
+        .attr("height", legendHeight)
+        .style("fill", "url(#negGrad)")
+        .style("stroke", "#333");
+
+      // Axis
+      const scale = d3.scaleLinear()
+        .domain([min, max])
+        .range([20, 20 + legendWidth]);
+
+      const axis = d3.axisBottom(scale)
+        .ticks(5)
+        .tickSize(4);
+
+      legendSvg.append("g")
+        .attr("transform", `translate(0, ${20 + legendHeight})`)
+        .call(axis);
 
       const countries = topojson.feature(worldData, worldData.objects.countries);
 
@@ -181,15 +294,22 @@
       // Example: hook up the checkbox to hide/show the values
       d3.select("#show-negative").on("change", function() {
         const checked = this.checked;
+
+        // Show/hide the legend
+        d3.select("#neg-legend")
+          .style("display", checked ? "block" : "none");
+
+        // Update map colors
         g.selectAll("path")
           .transition().duration(300)
           .attr("fill", d => {
-            if (!checked) return "#f0f0f0"; // muted when off
+            if (!checked) return "#f0f0f0";   // gray when off
             const cname = normalize(d.properties.name);
             const val = valueMap.get(cname);
             return val != null ? color(val) : "#b0b0b0";
           });
       });
+
     });
   </script>
 </body>
