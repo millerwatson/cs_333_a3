@@ -86,6 +86,10 @@
       <div id="neg-legend" style="margin-top:10px; display:block;">
         <svg width="220" height="60"></svg>
       </div>
+      <h3 style="margin-top:20px;">Correlation Heatmap</h3>
+      <div id="heatmap-container">
+        <svg id="heatmap" width="250" height="200"></svg>
+      </div>
       <!-- Add more checkboxes/controls -->
     </div>
   </div>
@@ -308,7 +312,66 @@
             const val = valueMap.get(cname);
             return val != null ? color(val) : "#b0b0b0";
           });
+        
       });
+      // ================================
+      // SIMPLE 4×6 HEATMAP TEMPLATE
+      // ================================
+      const heatmapSvg = d3.select("#heatmap");
+
+      const rows = 8;
+      const cols = 4;
+
+      // dummy placeholder data
+      const heatmapData = d3.range(rows * cols).map(i => ({
+        r: Math.floor(i / cols),
+        c: i % cols,
+        value: Math.random()  // placeholder 0–1 values
+      }));
+
+      const cellSize = 42;
+      const cellPadding = 1;
+      const heatmapColor = d3.scaleSequential(d3.interpolateBlues)
+        .domain([0, 1]); // placeholder domain
+
+      // draw cells
+      heatmapSvg
+        .attr("width", cols * (cellSize + cellPadding) + 40)
+        .attr("height", rows * (cellSize + cellPadding) + 40);
+
+      heatmapSvg.selectAll("rect")
+        .data(heatmapData)
+        .enter()
+        .append("rect")
+        .attr("x", d => d.c * (cellSize + cellPadding) + 30)
+        .attr("y", d => d.r * (cellSize + cellPadding) + 20)
+        .attr("width", cellSize)
+        .attr("height", cellSize)
+        .attr("fill", d => heatmapColor(d.value))
+        .attr("stroke", "#333");
+
+      // optional row labels A, B, C, D
+      heatmapSvg.selectAll(".row-label")
+        .data(d3.range(rows))
+        .enter()
+        .append("text")
+        .attr("class", "row-label")
+        .attr("x", 5)
+        .attr("y", d => d * (cellSize + cellPadding) + 20 + cellSize / 1.6)
+        .text(d => "Row " + (d + 1))
+        .style("font-size", "11px");
+
+      // optional column labels 1–6
+      heatmapSvg.selectAll(".col-label")
+        .data(d3.range(cols))
+        .enter()
+        .append("text")
+        .attr("class", "col-label")
+        .attr("x", d => d * (cellSize + cellPadding) + 30 + cellSize / 2)
+        .attr("y", 12)
+        .attr("text-anchor", "middle")
+        .text(d => "Col " + (d + 1))
+        .style("font-size", "11px");
 
     });
   </script>
