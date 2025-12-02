@@ -1,0 +1,830 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Mercator Map with Tooltip</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <script src="https://d3js.org/topojson.v3.min.js"></script>
+  <style>
+    body {
+      margin: 0;
+      font-family: sans-serif;
+    }
+
+    /* Layout: map on the left, controls on the right */
+    .layout {
+      display: flex;
+      height: 100vh;
+    }
+
+    .legend {
+      font-size: 12px;
+    }
+
+    /* This is your "box" for the map */
+    #map-container {
+      flex: 3;
+      position: relative;
+      border-right: 1px solid #ddd;
+    }
+
+    /* SVG fills the map box, not the whole viewport */
+    #map-container svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    /* Heatmap main container */
+    #heatmap-main-container {
+      flex: 3;
+      position: relative;
+      border-right: 1px solid #ddd;
+      padding: 20px;
+      overflow: auto;
+      display: none;
+    }
+
+    /* Right-side control panel */
+    #controls {
+      flex: 1;             
+      padding: 1rem;
+      box-sizing: border-box;
+      overflow-y: auto;
+    }
+
+    /* Scatterplot container */
+    #scatterplot-container {
+      flex: 1;
+      padding: 1rem;
+      box-sizing: border-box;
+      overflow-y: auto;
+      display: none;
+    }
+
+    /* Simple tooltip styling */
+    .tooltip {
+      position: absolute;
+      background: white;
+      padding: 6px 10px;
+      border: 1px solid #777;
+      border-radius: 4px;
+      pointer-events: none;
+      font-size: 13px;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+  </style>
+</head>
+<body>
+  <div id="time-controls" style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+    <button id="play-btn">Play</button>
+    <button id="pause-btn">Pause</button>
+
+    <input id="year-slider" type="range" min="2010" max="2024" value="2024" step="1" 
+          style="flex-grow:1;">
+
+    <span id="year-label">2024</span>
+    
+    <button id="toggle-view-btn" style="margin-left:20px; padding:5px 15px;">Show Heatmap</button>
+  </div>
+  <div class="layout">
+    <!-- LEFT: MAP BOX -->
+    <div id="map-container">
+      <svg></svg>
+    </div>
+
+    <!-- LEFT: HEATMAP BOX (initially hidden) -->
+    <div id="heatmap-main-container">
+      <h2>Correlation Heatmap</h2>
+      <svg id="heatmap-main"></svg>
+    </div>
+
+    <!-- RIGHT: CHECKBOX MENU -->
+    <div id="controls">
+      <h3>Factors</h3>
+      <label>
+        <input type="checkbox" id="show-negative" checked>
+        Negative Affect
+      </label>
+      <br>
+      <div id="neg-legend" style="margin-top:10px; display:block;">
+        <svg width="220" height="60"></svg>
+      </div>
+      <h3 style="margin-top:20px;">Correlation Heatmap</h3>
+      <div id="heatmap-container">
+        <svg id="heatmap" width="250" height="200"></svg>
+      </div>
+      <!-- Add more checkboxes/controls -->
+    </div>
+
+    <!-- RIGHT: SCATTERPLOT (initially hidden) -->
+    <div id="scatterplot-container">
+      <button id="back-to-controls" style="margin-bottom:10px;">← Back to Controls</button>
+      <h3 id="scatterplot-title">Scatterplot</h3>
+      <svg id="scatterplot" width="400" height="500"></svg>
+    </div>
+  </div>
+
+  <div class="tooltip"></div>
+
+  <script>
+    // Use the map container, not the window, for sizing
+    const mapContainer = document.getElementById("map-container");
+    const width = mapContainer.clientWidth;
+    const height = mapContainer.clientHeight;
+
+    const svg = d3.select("#map-container svg");
+    const tooltip = d3.select(".tooltip");
+
+    const projection = d3.geoMercator()
+      .scale(150)
+      .translate([width / 2, height / 2]);
+
+    const path = d3.geoPath().projection(projection);
+
+    // Create a <g> for all map content so zoom works cleanly
+    const g = svg.append("g");
+
+    const zoom = d3.zoom()
+      .scaleExtent([1, 8])
+      .translateExtent([[0, 0], [width, height]])
+      .on("zoom", (event) => {
+        g.attr("transform", event.transform);
+      });
+
+    svg.call(zoom);
+
+    // Helper: normalize country names for more reliable matching
+    function normalize(name) {
+      if (!name) return "";  // Handle undefined/null
+      return name
+        .toLowerCase()
+        .replace(/,/g, "")
+        .replace(/\./g, "")
+        .replace(/the\s+/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+
+    // For convenience, keep data & color scale in outer scope so controls can use them
+    let valueMap = new Map();
+    let color = null;
+
+    let currentYear = 2024;
+    let playing = false;
+    let playInterval = null;
+
+    const slider = document.getElementById("year-slider");
+    const yearLabel = document.getElementById("year-label");
+    const playBtn = document.getElementById("play-btn");
+    const pauseBtn = document.getElementById("pause-btn");
+
+    // --- Toggle between map and heatmap ---
+    const toggleBtn = document.getElementById("toggle-view-btn");
+    const heatmapMainContainer = document.getElementById("heatmap-main-container");
+    let showingMap = true;
+
+    toggleBtn.addEventListener("click", () => {
+      showingMap = !showingMap;
+      
+      if (showingMap) {
+        mapContainer.style.display = "block";
+        heatmapMainContainer.style.display = "none";
+        toggleBtn.textContent = "Show Heatmap";
+      } else {
+        mapContainer.style.display = "none";
+        heatmapMainContainer.style.display = "block";
+        toggleBtn.textContent = "Show Map";
+      }
+    });
+
+    // Will be set after data loads
+    let updateHeatmapForYear = null;
+
+    // --- Slider drag behavior ---
+    slider.addEventListener("input", function () {
+      currentYear = +this.value;
+      yearLabel.textContent = currentYear;
+
+      // Update heatmap if function is available
+      if (updateHeatmapForYear) {
+        updateHeatmapForYear(currentYear);
+      }
+    });
+
+    // --- Play animation ---
+    playBtn.addEventListener("click", () => {
+      if (playing) return;   // already playing
+      playing = true;
+
+      playInterval = setInterval(() => {
+        currentYear++;
+
+        if (currentYear > 2024) {
+          currentYear = 2010; // loop back to start
+        }
+
+        slider.value = currentYear;
+        yearLabel.textContent = currentYear;
+
+        // Update heatmap if function is available
+        if (updateHeatmapForYear) {
+          updateHeatmapForYear(currentYear);
+        }
+      }, 800);  // change speed here (ms per step)
+    });
+
+    // --- Pause animation ---
+    pauseBtn.addEventListener("click", () => {
+      playing = false;
+      clearInterval(playInterval);
+    });
+
+
+
+    Promise.all([
+      d3.json("https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json"),
+      d3.csv("oecd_hows_life_wide_2010_2024.csv")
+    ]).then(([worldData, oecd]) => {
+      // Get latest year data for Negative Affect
+      // Assuming one of your columns contains negative affect data
+      // Adjust the column name as needed based on your actual data
+      const latestYear = d3.max(oecd, d => +d.year);
+      const latestData = oecd.filter(d => +d.year === latestYear);
+
+      valueMap = new Map();
+      latestData.forEach(d => {
+        const norm = normalize(d.country);
+        // Use one of your actual variable columns here - replace with the appropriate column
+        // For now, using v_10_2 as an example
+        const value = +d.v_10_2;
+        if (!isNaN(value)) {
+          valueMap.set(norm, value);
+        }
+      });
+
+      const values = [...valueMap.values()];
+      const min = d3.min(values);
+      const max = d3.max(values);
+      const mid = d3.mean(values); 
+
+      const color = d3.scaleDiverging()
+        .domain([min, mid, max])
+        .interpolator(d3.interpolateRdBu);
+
+      // ----------------------
+      // DRAW NEGATIVE AFFECT LEGEND (right under checkbox)
+      // ----------------------
+      const legendSvg = d3.select("#neg-legend svg");
+      legendSvg.selectAll("*").remove();
+
+      const legendWidth = 180;
+      const legendHeight = 12;
+
+      // Gradient
+      const defs = legendSvg.append("defs");
+      const gradient = defs.append("linearGradient")
+        .attr("id", "negGrad")
+        .attr("x1", "0%")
+        .attr("x2", "100%");
+
+      gradient.append("stop")
+        .attr("offset", "0%")
+        .attr("stop-color", color(min));
+
+      gradient.append("stop")
+        .attr("offset", "50%")
+        .attr("stop-color", color(mid));
+
+      gradient.append("stop")
+        .attr("offset", "100%")
+        .attr("stop-color", color(max));
+
+      // Gradient bar
+      legendSvg.append("rect")
+        .attr("x", 20)
+        .attr("y", 20)
+        .attr("width", legendWidth)
+        .attr("height", legendHeight)
+        .style("fill", "url(#negGrad)")
+        .style("stroke", "#333");
+
+      // Axis
+      const scale = d3.scaleLinear()
+        .domain([min, max])
+        .range([20, 20 + legendWidth]);
+
+      const axis = d3.axisBottom(scale)
+        .ticks(5)
+        .tickSize(4);
+
+      legendSvg.append("g")
+        .attr("transform", `translate(0, ${20 + legendHeight})`)
+        .call(axis);
+
+      const countries = topojson.feature(worldData, worldData.objects.countries);
+
+      g.selectAll("path")
+        .data(countries.features)
+        .enter()
+        .append("path")
+        .attr("d", path)
+        .attr("stroke", "#333")
+        .attr("fill", d => {
+          const cname = normalize(d.properties.name);
+          const val = valueMap.get(cname);
+          return val != null ? color(val) : "#b0b0b0";
+        })
+        .on("mouseover", function(event, d) {
+          const cname = normalize(d.properties.name);
+          const val = valueMap.get(cname);
+
+          d3.select(this).attr("opacity", 0.8);
+
+          tooltip
+            .style("opacity", 1)
+            .html(
+              `<strong>${d.properties.name}</strong><br>` +
+              (val != null ? `Negative Affect: ${val}` : "No data")
+            );
+        })
+        .on("mousemove", event => {
+          tooltip
+            .style("left", event.pageX + 10 + "px")
+            .style("top", event.pageY + 10 + "px");
+        })
+        .on("mouseout", function() {
+          d3.select(this).attr("opacity", 1);
+          tooltip.style("opacity", 0);
+        });
+
+      // Example: hook up the checkbox to hide/show the values
+      d3.select("#show-negative").on("change", function() {
+        const checked = this.checked;
+
+        // Show/hide the legend
+        d3.select("#neg-legend")
+          .style("display", checked ? "block" : "none");
+
+        // Update map colors
+        g.selectAll("path")
+          .transition().duration(300)
+          .attr("fill", d => {
+            if (!checked) return "#f0f0f0";   // gray when off
+            const cname = normalize(d.properties.name);
+            const val = valueMap.get(cname);
+            return val != null ? color(val) : "#b0b0b0";
+          });
+        
+      });
+      // ================================
+      // SIMPLE 4×6 HEATMAP TEMPLATE (in sidebar)
+      // ================================
+      const heatmapSvg = d3.select("#heatmap");
+
+      const rows = 8;
+      const cols = 4;
+
+      // dummy placeholder data
+      const heatmapData = d3.range(rows * cols).map(i => ({
+        r: Math.floor(i / cols),
+        c: i % cols,
+        value: Math.random()  // placeholder 0–1 values
+      }));
+
+      const cellSize = 42;
+      const cellPadding = 1;
+      const heatmapColor = d3.scaleSequential(d3.interpolateBlues)
+        .domain([0, 1]); // placeholder domain
+
+      // draw cells
+      heatmapSvg
+        .attr("width", cols * (cellSize + cellPadding) + 40)
+        .attr("height", rows * (cellSize + cellPadding) + 40);
+
+      heatmapSvg.selectAll("rect")
+        .data(heatmapData)
+        .enter()
+        .append("rect")
+        .attr("x", d => d.c * (cellSize + cellPadding) + 30)
+        .attr("y", d => d.r * (cellSize + cellPadding) + 20)
+        .attr("width", cellSize)
+        .attr("height", cellSize)
+        .attr("fill", d => heatmapColor(d.value))
+        .attr("stroke", "#333");
+
+      // optional row labels A, B, C, D
+      heatmapSvg.selectAll(".row-label")
+        .data(d3.range(rows))
+        .enter()
+        .append("text")
+        .attr("class", "row-label")
+        .attr("x", 5)
+        .attr("y", d => d * (cellSize + cellPadding) + 20 + cellSize / 1.6)
+        .text(d => "Row " + (d + 1))
+        .style("font-size", "11px");
+
+      // optional column labels 1–6
+      heatmapSvg.selectAll(".col-label")
+        .data(d3.range(cols))
+        .enter()
+        .append("text")
+        .attr("class", "col-label")
+        .attr("x", d => d * (cellSize + cellPadding) + 30 + cellSize / 2)
+        .attr("y", 12)
+        .attr("text-anchor", "middle")
+        .text(d => "Col " + (d + 1))
+        .style("font-size", "11px");
+
+      // ================================
+      // MAIN CORRELATION HEATMAP
+      // ================================
+      
+      // Get all numeric variable columns (exclude country and year)
+      const allColumns = oecd.columns.filter(col => col !== 'country' && col !== 'year');
+      const numVars = allColumns.length;
+      
+      // Function to calculate correlation between two arrays
+      function correlation(x, y) {
+        const n = x.length;
+        if (n === 0) return null;
+        
+        const sumX = d3.sum(x);
+        const sumY = d3.sum(y);
+        const sumXY = d3.sum(x.map((xi, i) => xi * y[i]));
+        const sumX2 = d3.sum(x.map(xi => xi * xi));
+        const sumY2 = d3.sum(y.map(yi => yi * yi));
+        
+        const numerator = n * sumXY - sumX * sumY;
+        const denominator = Math.sqrt((n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY));
+        
+        if (denominator === 0) return null;
+        return numerator / denominator;
+      }
+      
+      // Function to calculate correlation matrix for a given year
+      function calculateCorrelationMatrix(year) {
+        const yearData = oecd.filter(d => +d.year === year);
+        const matrix = [];
+        
+        for (let i = 0; i < numVars; i++) {
+          const row = [];
+          for (let j = 0; j < numVars; j++) {
+            if (i === j) {
+              row.push(1); // Perfect correlation with itself
+            } else {
+              // Get values for both variables, filtering out missing data
+              const pairs = yearData
+                .map(d => ({
+                  x: parseFloat(d[allColumns[i]]),
+                  y: parseFloat(d[allColumns[j]])
+                }))
+                .filter(pair => !isNaN(pair.x) && !isNaN(pair.y));
+              
+              if (pairs.length > 1) {
+                const xVals = pairs.map(p => p.x);
+                const yVals = pairs.map(p => p.y);
+                const corr = correlation(xVals, yVals);
+                row.push(corr);
+              } else {
+                row.push(null); // Not enough data
+              }
+            }
+          }
+          matrix.push(row);
+        }
+        return matrix;
+      }
+      
+      // Initial correlation matrix for current year
+      let correlationMatrix = calculateCorrelationMatrix(currentYear);
+      
+      // Set up heatmap dimensions
+      const heatmapMainSvg = d3.select("#heatmap-main");
+      const mainCellSize = 25;
+      const mainCellPadding = 1;
+      const labelWidth = 80;
+      const labelHeight = 80;
+      
+      const totalWidth = numVars * (mainCellSize + mainCellPadding) + labelWidth + 40;
+      const totalHeight = numVars * (mainCellSize + mainCellPadding) + labelHeight + 40;
+      
+      heatmapMainSvg
+        .attr("width", totalWidth)
+        .attr("height", totalHeight);
+      
+      // Color scale for correlations (-1 to 1)
+      const corrColor = d3.scaleSequential(d3.interpolateRdBu)
+        .domain([1, -1]); // Red for positive, blue for negative
+      
+      // Function to draw the heatmap
+      function drawMainHeatmap() {
+        heatmapMainSvg.selectAll("*").remove();
+        
+        const g = heatmapMainSvg.append("g")
+          .attr("transform", `translate(${labelWidth}, ${labelHeight})`);
+        
+        // Draw cells
+        const cellData = [];
+        for (let i = 0; i < numVars; i++) {
+          for (let j = 0; j < numVars; j++) {
+            cellData.push({
+              row: i,
+              col: j,
+              value: correlationMatrix[i][j],
+              varX: allColumns[j],
+              varY: allColumns[i]
+            });
+          }
+        }
+        
+        g.selectAll("rect")
+          .data(cellData)
+          .enter()
+          .append("rect")
+          .attr("x", d => d.col * (mainCellSize + mainCellPadding))
+          .attr("y", d => d.row * (mainCellSize + mainCellPadding))
+          .attr("width", mainCellSize)
+          .attr("height", mainCellSize)
+          .attr("fill", d => d.value === null ? "#e0e0e0" : corrColor(d.value))
+          .attr("stroke", "#fff")
+          .attr("stroke-width", 0.5)
+          .style("cursor", "pointer")
+          .on("click", function(event, d) {
+            if (d.value !== null && d.row !== d.col) {
+              showScatterplot(d.varX, d.varY, currentYear);
+            }
+          })
+          .on("mouseover", function(event, d) {
+            if (d.value !== null) {
+              d3.select(this).attr("stroke-width", 2).attr("stroke", "#000");
+              
+              tooltip
+                .style("opacity", 1)
+                .html(
+                  `<strong>${d.varY}</strong> vs <strong>${d.varX}</strong><br>` +
+                  `Correlation: ${d.value.toFixed(3)}`
+                );
+            }
+          })
+          .on("mousemove", event => {
+            tooltip
+              .style("left", event.pageX + 10 + "px")
+              .style("top", event.pageY + 10 + "px");
+          })
+          .on("mouseout", function() {
+            d3.select(this).attr("stroke-width", 0.5).attr("stroke", "#fff");
+            tooltip.style("opacity", 0);
+          });
+        
+        // Column labels (top)
+        heatmapMainSvg.selectAll(".col-label-main")
+          .data(allColumns)
+          .enter()
+          .append("text")
+          .attr("class", "col-label-main")
+          .attr("x", (d, i) => labelWidth + i * (mainCellSize + mainCellPadding) + mainCellSize / 2)
+          .attr("y", labelHeight - 5)
+          .attr("text-anchor", "end")
+          .attr("transform", (d, i) => 
+            `rotate(-45, ${labelWidth + i * (mainCellSize + mainCellPadding) + mainCellSize / 2}, ${labelHeight - 5})`)
+          .text(d => d)
+          .style("font-size", "9px");
+        
+        // Row labels (left)
+        heatmapMainSvg.selectAll(".row-label-main")
+          .data(allColumns)
+          .enter()
+          .append("text")
+          .attr("class", "row-label-main")
+          .attr("x", labelWidth - 5)
+          .attr("y", (d, i) => labelHeight + i * (mainCellSize + mainCellPadding) + mainCellSize / 2)
+          .attr("text-anchor", "end")
+          .attr("dominant-baseline", "middle")
+          .text(d => d)
+          .style("font-size", "9px");
+        
+        // Add color legend
+        const legendG = heatmapMainSvg.append("g")
+          .attr("transform", `translate(${totalWidth - 100}, 20)`);
+        
+        const legendGradient = heatmapMainSvg.append("defs")
+          .append("linearGradient")
+          .attr("id", "corrGradient")
+          .attr("x1", "0%")
+          .attr("x2", "100%");
+        
+        legendGradient.append("stop")
+          .attr("offset", "0%")
+          .attr("stop-color", corrColor(1));
+        
+        legendGradient.append("stop")
+          .attr("offset", "50%")
+          .attr("stop-color", corrColor(0));
+        
+        legendGradient.append("stop")
+          .attr("offset", "100%")
+          .attr("stop-color", corrColor(-1));
+        
+        legendG.append("rect")
+          .attr("width", 80)
+          .attr("height", 12)
+          .style("fill", "url(#corrGradient)")
+          .style("stroke", "#333");
+        
+        legendG.append("text")
+          .attr("x", 0)
+          .attr("y", 25)
+          .text("-1")
+          .style("font-size", "10px");
+        
+        legendG.append("text")
+          .attr("x", 40)
+          .attr("y", 25)
+          .attr("text-anchor", "middle")
+          .text("0")
+          .style("font-size", "10px");
+        
+        legendG.append("text")
+          .attr("x", 80)
+          .attr("y", 25)
+          .attr("text-anchor", "end")
+          .text("1")
+          .style("font-size", "10px");
+      }
+      
+      // Draw initial heatmap
+      drawMainHeatmap();
+      
+      // Update heatmap when year changes (we'll need to hook this up to slider)
+      updateHeatmapForYear = function(year) {
+        correlationMatrix = calculateCorrelationMatrix(year);
+        drawMainHeatmap();
+      };
+
+      // ================================
+      // SCATTERPLOT FUNCTIONALITY
+      // ================================
+      const scatterplotContainer = document.getElementById("scatterplot-container");
+      const controlsContainer = document.getElementById("controls");
+      const backBtn = document.getElementById("back-to-controls");
+      const scatterplotSvg = d3.select("#scatterplot");
+      const scatterplotTitle = document.getElementById("scatterplot-title");
+
+      backBtn.addEventListener("click", () => {
+        scatterplotContainer.style.display = "none";
+        controlsContainer.style.display = "block";
+      });
+
+      function showScatterplot(varX, varY, year) {
+        // Switch to scatterplot view
+        controlsContainer.style.display = "none";
+        scatterplotContainer.style.display = "block";
+
+        // Update title
+        scatterplotTitle.textContent = `${varY} vs ${varX} (${year})`;
+
+        // Get data for the selected year
+        const yearData = oecd.filter(d => +d.year === year);
+        
+        // Prepare scatterplot data
+        const scatterData = yearData
+          .map(d => ({
+            country: d.country,
+            x: parseFloat(d[varX]),
+            y: parseFloat(d[varY])
+          }))
+          .filter(d => !isNaN(d.x) && !isNaN(d.y));
+
+        // Clear previous plot
+        scatterplotSvg.selectAll("*").remove();
+
+        if (scatterData.length === 0) {
+          scatterplotSvg.append("text")
+            .attr("x", 200)
+            .attr("y", 250)
+            .attr("text-anchor", "middle")
+            .text("No data available for this combination")
+            .style("font-size", "14px")
+            .style("fill", "#999");
+          return;
+        }
+
+        // Set up margins and dimensions
+        const margin = {top: 20, right: 20, bottom: 60, left: 60};
+        const width = 400 - margin.left - margin.right;
+        const height = 500 - margin.top - margin.bottom;
+
+        const g = scatterplotSvg.append("g")
+          .attr("transform", `translate(${margin.left},${margin.top})`);
+
+        // Set up scales
+        const xExtent = d3.extent(scatterData, d => d.x);
+        const yExtent = d3.extent(scatterData, d => d.y);
+
+        const xScale = d3.scaleLinear()
+          .domain([xExtent[0] * 0.95, xExtent[1] * 1.05])
+          .range([0, width]);
+
+        const yScale = d3.scaleLinear()
+          .domain([yExtent[0] * 0.95, yExtent[1] * 1.05])
+          .range([height, 0]);
+
+        // Add axes
+        const xAxis = d3.axisBottom(xScale).ticks(5);
+        const yAxis = d3.axisLeft(yScale).ticks(5);
+
+        g.append("g")
+          .attr("transform", `translate(0,${height})`)
+          .call(xAxis)
+          .append("text")
+          .attr("x", width / 2)
+          .attr("y", 40)
+          .attr("fill", "#000")
+          .attr("text-anchor", "middle")
+          .text(varX)
+          .style("font-size", "11px");
+
+        g.append("g")
+          .call(yAxis)
+          .append("text")
+          .attr("transform", "rotate(-90)")
+          .attr("x", -height / 2)
+          .attr("y", -45)
+          .attr("fill", "#000")
+          .attr("text-anchor", "middle")
+          .text(varY)
+          .style("font-size", "11px");
+
+        // Add gridlines
+        g.append("g")
+          .attr("class", "grid")
+          .attr("transform", `translate(0,${height})`)
+          .call(d3.axisBottom(xScale).ticks(5).tickSize(-height).tickFormat(""))
+          .style("stroke-dasharray", "3,3")
+          .style("opacity", 0.2);
+
+        g.append("g")
+          .attr("class", "grid")
+          .call(d3.axisLeft(yScale).ticks(5).tickSize(-width).tickFormat(""))
+          .style("stroke-dasharray", "3,3")
+          .style("opacity", 0.2);
+
+        // Add points
+        g.selectAll("circle")
+          .data(scatterData)
+          .enter()
+          .append("circle")
+          .attr("cx", d => xScale(d.x))
+          .attr("cy", d => yScale(d.y))
+          .attr("r", 5)
+          .attr("fill", "#4682b4")
+          .attr("opacity", 0.7)
+          .attr("stroke", "#fff")
+          .attr("stroke-width", 1)
+          .on("mouseover", function(event, d) {
+            d3.select(this)
+              .attr("r", 7)
+              .attr("opacity", 1);
+
+            tooltip
+              .style("opacity", 1)
+              .html(
+                `<strong>${d.country}</strong><br>` +
+                `${varX}: ${d.x.toFixed(2)}<br>` +
+                `${varY}: ${d.y.toFixed(2)}`
+              );
+          })
+          .on("mousemove", event => {
+            tooltip
+              .style("left", event.pageX + 10 + "px")
+              .style("top", event.pageY + 10 + "px");
+          })
+          .on("mouseout", function() {
+            d3.select(this)
+              .attr("r", 5)
+              .attr("opacity", 0.7);
+            tooltip.style("opacity", 0);
+          });
+
+        // Calculate and display correlation
+        const xVals = scatterData.map(d => d.x);
+        const yVals = scatterData.map(d => d.y);
+        const corr = correlation(xVals, yVals);
+
+        if (corr !== null) {
+          scatterplotSvg.append("text")
+            .attr("x", margin.left + 10)
+            .attr("y", margin.top - 5)
+            .text(`r = ${corr.toFixed(3)}`)
+            .style("font-size", "12px")
+            .style("font-weight", "bold")
+            .style("fill", corr > 0 ? "#d73027" : "#4575b4");
+        }
+      }
+
+    });
+  </script>
+</body>
+</html>

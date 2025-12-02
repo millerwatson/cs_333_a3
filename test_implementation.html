@@ -21,7 +21,6 @@
       font-size: 12px;
     }
 
-
     /* This is your "box" for the map */
     #map-container {
       flex: 3;
@@ -34,6 +33,16 @@
       width: 100%;
       height: 100%;
       display: block;
+    }
+
+    /* Heatmap main container */
+    #heatmap-main-container {
+      flex: 3;
+      position: relative;
+      border-right: 1px solid #ddd;
+      padding: 20px;
+      overflow: auto;
+      display: none;
     }
 
     /* Right-side control panel */
@@ -67,12 +76,19 @@
           style="flex-grow:1;">
 
     <span id="year-label">2024</span>
+    
+    <button id="toggle-view-btn" style="margin-left:20px; padding:5px 15px;">Show Heatmap</button>
   </div>
   <div class="layout">
     <!-- LEFT: MAP BOX -->
     <div id="map-container">
       <svg></svg>
-      <svg></svg>
+    </div>
+
+    <!-- LEFT: HEATMAP BOX (initially hidden) -->
+    <div id="heatmap-main-container">
+      <h2>Correlation Heatmap</h2>
+      <svg id="heatmap-main"></svg>
     </div>
 
     <!-- RIGHT: CHECKBOX MENU -->
@@ -146,6 +162,25 @@
     const yearLabel = document.getElementById("year-label");
     const playBtn = document.getElementById("play-btn");
     const pauseBtn = document.getElementById("pause-btn");
+
+    // --- Toggle between map and heatmap ---
+    const toggleBtn = document.getElementById("toggle-view-btn");
+    const heatmapMainContainer = document.getElementById("heatmap-main-container");
+    let showingMap = true;
+
+    toggleBtn.addEventListener("click", () => {
+      showingMap = !showingMap;
+      
+      if (showingMap) {
+        mapContainer.style.display = "block";
+        heatmapMainContainer.style.display = "none";
+        toggleBtn.textContent = "Show Heatmap";
+      } else {
+        mapContainer.style.display = "none";
+        heatmapMainContainer.style.display = "block";
+        toggleBtn.textContent = "Show Map";
+      }
+    });
 
     // --- Slider drag behavior ---
     slider.addEventListener("input", function () {
@@ -315,7 +350,7 @@
         
       });
       // ================================
-      // SIMPLE 4×6 HEATMAP TEMPLATE
+      // SIMPLE 4×6 HEATMAP TEMPLATE (in sidebar)
       // ================================
       const heatmapSvg = d3.select("#heatmap");
 
@@ -372,6 +407,24 @@
         .attr("text-anchor", "middle")
         .text(d => "Col " + (d + 1))
         .style("font-size", "11px");
+
+      // ================================
+      // MAIN HEATMAP (placeholder for now)
+      // ================================
+      const heatmapMainSvg = d3.select("#heatmap-main");
+      
+      // This will be populated with the actual 25x25 correlation matrix later
+      heatmapMainSvg
+        .attr("width", 600)
+        .attr("height", 600);
+      
+      heatmapMainSvg.append("text")
+        .attr("x", 300)
+        .attr("y", 300)
+        .attr("text-anchor", "middle")
+        .text("25×25 Correlation Heatmap will go here")
+        .style("font-size", "16px")
+        .style("fill", "#666");
 
     });
   </script>
